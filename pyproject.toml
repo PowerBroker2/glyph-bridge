@@ -1,0 +1,18 @@
+[project]
+name = "glyph-bridge"
+version = "0.1.0"
+description = "A utility to convert Google Fonts to C++ header files."
+readme = "README.md"
+authors = [{name = "Power_Broker", email = "gitstuff2@gmail.com"}]
+dependencies = [
+    "requests",
+    "matplotlib",
+    "numpy",
+    "pillow"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+font-gen = "glyph-bridge.cli:main"
