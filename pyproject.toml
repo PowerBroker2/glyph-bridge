@@ -1,6 +1,6 @@
 [project]
 name = "glyph-bridge"
-version = "0.1.0"
+version = "0.1.1"
 description = "A utility to convert Google Fonts to C++ header files."
 readme = "README.md"
 authors = [{name = "Power_Broker", email = "gitstuff2@gmail.com"}]
