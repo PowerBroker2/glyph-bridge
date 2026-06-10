@@ -15,4 +15,4 @@ dependencies = [
 where = ["src"]
 
 [project.scripts]
-font-gen = "glyph-bridge.cli:main"
+glyph-bridge = "glyph_bridge.cli:main"
