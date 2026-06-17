@@ -33,20 +33,17 @@ def setup_font_repo():
         os.remove(ZIP_NAME)
 
 def find_font_path(family, style):
-    """Locates a TTF file in the repo based on family and style keywords."""
     family_query = family.replace(" ", "").lower()
     style_query = style.replace(" ", "").lower()
     for root, _, files in os.walk(EXTRACTED_DIR):
         for file in files:
             f_lower = file.lower()
             if family_query in f_lower and file.endswith(".ttf"):
-                # Matches specific style OR accepts variable fonts (containing brackets)
                 if style_query in f_lower or ("[" in f_lower and "]" in f_lower):
                     return os.path.join(root, file), False
     return None, False
 
 def get_glyph_data(char, font_path, size, is_fake_italic):
-    """Rasterizes a character into a boolean numpy array."""
     font = ImageFont.truetype(font_path, size)
     left, top, right, bottom = font.getbbox(char)
     w, h = max(1, right - left), max(1, bottom - top)
@@ -67,30 +64,54 @@ def get_glyph_data(char, font_path, size, is_fake_italic):
     return np.array([[img.getpixel((x, y)) > 128 for x in range(w)] for y in range(h)])
 
 def get_safe_name(char):
-    """Maps special symbols to readable C++ variable names."""
     if char.isalnum(): return f"char_{char}"
     return f"char_{SYMBOL_NAMES.get(char, 'unknown')}"
 
 def export_header(font_path, fam, sty, size, is_fake_italic, output_dir):
-    """Exports font glyphs into a C++ header file."""
     os.makedirs(output_dir, exist_ok=True)
-    
     namespace = f"font_{fam.replace(' ','_')}_{sty.replace(' ','_')}_{size}".lower()
     filename = os.path.join(output_dir, f"{namespace}.h")
     
+    chars = string.ascii_letters + string.digits + string.punctuation
+    glyph_cache = {}
+    max_w, max_h = 0, 0
+    
+    # Pass 1: Cache glyphs and find dimensions
+    for char in chars:
+        try:
+            data = get_glyph_data(char, font_path, size, is_fake_italic)
+            h, w = data.shape
+            glyph_cache[char] = data
+            max_w, max_h = max(max_w, w), max(max_h, h)
+        except: continue
+
+    # Pass 2: Write header file
     with open(filename, 'w') as f:
         f.write(f"#ifndef {namespace.upper()}_H\n#define {namespace.upper()}_H\n\n")
+        f.write("#include <Arduino.h>\n\n")
         f.write(f"namespace {namespace} {{\n\n")
         
-        chars = string.ascii_letters + string.digits + string.punctuation
-        for char in chars:
-            try:
-                data = get_glyph_data(char, font_path, size, is_fake_italic)
-                h, w = data.shape
-                f.write(f"  const bool {get_safe_name(char)}[{h}][{w}] = {{\n")
-                for row in data:
-                    f.write("    {" + ", ".join(["true" if val else "false" for val in row]) + "},\n")
-                f.write("  };\n\n")
-            except: continue
-        f.write("} // namespace\n\n#endif")
+        # Write glyph arrays with padding and PROGMEM
+        for char, data in glyph_cache.items():
+            f.write(f"  const bool {get_safe_name(char)}[{max_h}][{max_w}] PROGMEM = {{\n")
+            for y in range(max_h):
+                f.write("    {")
+                row_str = ["true" if (y < data.shape[0] and x < data.shape[1] and data[y, x]) else "false" for x in range(max_w)]
+                f.write(", ".join(row_str) + "},\n")
+            f.write("  };\n\n")
+        
+        # Write lookup function
+        f.write(f"  inline const bool* lookupChar(char c) {{\n")
+        f.write(f"    switch(c) {{\n")
+        for char, data in glyph_cache.items():
+            f.write(f"      case '{char}': return (const bool*){get_safe_name(char)};\n")
+        f.write(f"      default: return nullptr;\n")
+        f.write(f"    }}\n")
+        f.write(f"  }}\n\n")
+        
+        # Helper to export constants for user
+        f.write(f"  const int GLYPH_WIDTH = {max_w};\n")
+        f.write(f"  const int GLYPH_HEIGHT = {max_h};\n\n")
+        
+        f.write(f"}} // namespace {namespace}\n\n#endif")
     return filename
