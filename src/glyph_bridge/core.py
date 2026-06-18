@@ -45,7 +45,16 @@ def find_font_path(family, style):
 
 def get_glyph_data(char, font_path, size, is_fake_italic):
     font = ImageFont.truetype(font_path, size)
-    left, top, right, bottom = font.getbbox(char)
+    bbox = font.getbbox(char)
+    
+    # Robust fallback for space character or empty glyph blocks
+    if bbox is None:
+        w = max(1, int(font.getlength(char))) if hasattr(font, 'getlength') else size // 3
+        h = size
+        left, top, right, bottom = 0, 0, w, h
+    else:
+        left, top, right, bottom = bbox
+        
     w, h = max(1, right - left), max(1, bottom - top)
     
     img = Image.new('L', (w, h), color=0)
@@ -72,46 +81,93 @@ def export_header(font_path, fam, sty, size, is_fake_italic, output_dir):
     namespace = f"font_{fam.replace(' ','_')}_{sty.replace(' ','_')}_{size}".lower()
     filename = os.path.join(output_dir, f"{namespace}.h")
     
-    chars = string.ascii_letters + string.digits + string.punctuation
+    chars = string.ascii_letters + string.digits + string.punctuation + " "
     glyph_cache = {}
-    max_w, max_h = 0, 0
+    max_h = 0
     
-    # Pass 1: Cache glyphs and find dimensions
+    # Pass 1: Cache glyphs and calculate dimensions
     for char in chars:
         try:
             data = get_glyph_data(char, font_path, size, is_fake_italic)
-            h, w = data.shape
-            glyph_cache[char] = data
-            max_w, max_h = max(max_w, w), max(max_h, h)
+            true_coords = np.argwhere(data)
+            if true_coords.size > 0:
+                min_y, min_x = true_coords.min(axis=0)
+                max_y, max_x = true_coords.max(axis=0)
+                char_w = int(max_x - min_x + 1)
+                tight_data = data[min_y : max_y + 1, min_x : max_x + 1]
+            else:
+                char_w = data.shape[1]
+                tight_data = data[0:1, :]
+                
+            gh, gw = tight_data.shape
+            glyph_cache[char] = (tight_data, char_w)
+            max_h = max(max_h, gh)
         except: continue
 
     # Pass 2: Write header file
     with open(filename, 'w') as f:
         f.write(f"#ifndef {namespace.upper()}_H\n#define {namespace.upper()}_H\n\n")
         f.write("#include <Arduino.h>\n\n")
+        
+        # --- GLOBAL COMMON CLASS DEFINITION ---
+        # Guarded so it safely compiles only once across all imported fonts
+        f.write("#ifndef CUSTOM_BITMAP_FONT_H\n")
+        f.write("#define CUSTOM_BITMAP_FONT_H\n")
+        f.write("struct Glyph {\n")
+        f.write("  const bool* data;\n")
+        f.write("  int width;\n")
+        f.write("};\n\n")
+        f.write("class BitmapFont {\n")
+        f.write("public:\n")
+        f.write("  typedef Glyph (*LookupFunc)(char);\n")
+        f.write("private:\n")
+        f.write("  LookupFunc _lookup;\n")
+        f.write("  int _height;\n")
+        f.write("public:\n")
+        f.write("  BitmapFont(LookupFunc lookup, int height) : _lookup(lookup), _height(height) {}\n")
+        f.write("  inline Glyph lookupChar(char c) const { return _lookup(c); }\n")
+        f.write("  inline int getHeight() const { return _height; }\n")
+        f.write("};\n")
+        f.write("#endif // CUSTOM_BITMAP_FONT_H\n\n")
+        
+        # --- FONT SPECIFIC DATA ---
         f.write(f"namespace {namespace} {{\n\n")
         
-        # Write glyph arrays with padding and PROGMEM
-        for char, data in glyph_cache.items():
-            f.write(f"  const bool {get_safe_name(char)}[{max_h}][{max_w}] PROGMEM = {{\n")
+        # Write left-justified, bottom-aligned PROGMEM blocks
+        for char, (tight_data, char_w) in glyph_cache.items():
+            gh, gw = tight_data.shape
+            f.write(f"  const bool {get_safe_name(char)}[{max_h}][{char_w}] PROGMEM = {{\n")
+            v_offset = max_h - gh
+            
             for y in range(max_h):
                 f.write("    {")
-                row_str = ["true" if (y < data.shape[0] and x < data.shape[1] and data[y, x]) else "false" for x in range(max_w)]
+                row_str = []
+                for x in range(char_w):
+                    data_y = y - v_offset
+                    if 0 <= data_y < gh:
+                        row_str.append("true" if tight_data[data_y, x] else "false")
+                    else:
+                        row_str.append("false")
                 f.write(", ".join(row_str) + "},\n")
             f.write("  };\n\n")
         
-        # Write lookup function
-        f.write(f"  inline const bool* lookupChar(char c) {{\n")
+        # Internal unique lookup wrapper
+        f.write(f"  inline Glyph internalLookup(char c) {{\n")
         f.write(f"    switch(c) {{\n")
-        for char, data in glyph_cache.items():
-            f.write(f"      case '{char}': return (const bool*){get_safe_name(char)};\n")
-        f.write(f"      default: return nullptr;\n")
+        for char, (tight_data, char_w) in glyph_cache.items():
+            safe_char = char
+            if char == '\\': safe_char = "\\\\"
+            elif char == "'": safe_char = "\\'"
+            f.write(f"      case '{safe_char}': return {{ (const bool*){get_safe_name(char)}, {char_w} }};\n")
+        f.write(f"      default: return {{ nullptr, 0 }};\n")
         f.write(f"    }}\n")
         f.write(f"  }}\n\n")
         
-        # Helper to export constants for user
-        f.write(f"  const int GLYPH_WIDTH = {max_w};\n")
         f.write(f"  const int GLYPH_HEIGHT = {max_h};\n\n")
+        
+        # --- EXPOSE THE UNIFIED INTERFACE INSTANCE ---
+        f.write(f"  // Shared interface instance of common type 'BitmapFont'\n")
+        f.write(f"  const BitmapFont Font(internalLookup, GLYPH_HEIGHT);\n\n")
         
         f.write(f"}} // namespace {namespace}\n\n#endif")
     return filename
