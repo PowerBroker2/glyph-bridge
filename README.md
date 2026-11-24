@@ -1,84 +1,64 @@
-# Font Pixel Generator
+# Glyph Bridge
 
-A robust, modular CLI tool and Python library designed to bridge the gap between high-quality typography and embedded systems. This tool rasterizes TTF font files from the Google Fonts library into clean, C++ compatible header files for use in memory-constrained GUI projects.
+Turn a Google Fonts family or a local font file into a C++ bitmap font for [PixelPlanner](https://github.com/PowerBroker2/PixelPlanner).
 
-## Overview
+## Install
 
-Working with embedded displays often requires custom, bitmap-based fonts. This tool automates the process of finding fonts, rasterizing specific characters into boolean arrays, and exporting them as C++ constants. It includes intelligent symbol mapping to ensure all exported character variables adhere to C++ naming conventions.
+Use Python 3.9 or newer. Install the published package with `python -m pip install glyph-bridge`, or run `python -m pip install .` from this checkout to use the features documented here.
 
-## Features
+## Desktop app
 
-- **Automated Repository Handling:** Automatically downloads and manages a local cache of the Google Fonts repository.
-- **Fuzzy Font Discovery:** Easily find and select fonts by family name and style variant.
-- **C++ Header Generation:** Exports character data into `.h` files with namespaced structures.
-- **Symbol Safety:** Automatically maps non-alphanumeric characters (like `#` or `@`) to safe, readable names (e.g., `char_hash`, `char_at`).
-- **Visual Previewing:** Uses `matplotlib` to render and display a pixel preview of your selected character before finalizing your export.
+Run `glyph-bridge-gui` after installing from this checkout, or run `python -m glyph_bridge.gui` in the same Python environment. The desktop app requires Tkinter, which is included with standard Windows and macOS Python installers. Some Linux distributions package it separately.
 
-## Installation
+1. Choose **Google Fonts** or **Local fonts**. The font dropdown lists the available families or installed faces. Use **Choose folder…** to scan a different directory.
+2. Select a font. **Weight** and **Italic** reflect the styles available for that font. If a style from the previous font is unavailable, the app selects an available style and continues. Toggle **Strikethrough** or choose **Normal**, **Superscript**, or **Subscript** for vertical position. The preview updates automatically, and the effects are baked into the exported glyphs.
+3. Under **Characters to export**, choose **All printable ASCII** for all 95 glyphs, **Only preview characters** for the distinct characters you typed in the preview, or **Custom characters** to type an explicit list like `READY 0123456789`. Case matters and spaces count.
+4. Choose your sketch folder and click **Export header**. Open the output folder from the app when it's ready.
 
-Clone the repository:
+## Export a font
 
-```bash
-pip install glyph-bridge
+```sh
+glyph-bridge --family "Inter" --style Bold --size 24 --export --output ./MySketch
 ```
 
-## CLI Reference
+The command writes `font_inter_bold_24.h`. On first use it downloads just the requested Google Fonts family and caches it with any accompanying license. Set `GLYPH_BRIDGE_CACHE` to override the cache location. Named variable-font styles such as Bold use their actual font instance when available.
 
-You can run the tool directly from your terminal:
+To work offline or use your own font, pass `--font-file` instead of `--family`.
 
-```bash
-glyph-bridge \
-  --family "Inter" \
-  --style "Regular" \
-  --size 48 \
-  --export \
-  --output "./include/fonts" \
-  --char "A"
+```sh
+glyph-bridge --font-file ./MyFont.ttf --size 24 --export --output ./MySketch
 ```
 
-### Argument Details
+Exports contain printable ASCII by default. Use `--charset "READY 0123456789"` to export just those characters and reduce flash usage. Check the font's license before distributing generated bitmaps.
 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `--family` | String | Required | The name of the font family (e.g., `"Roboto"`). |
-| `--style` | String | `"Regular"` | The specific weight/variant (e.g., `"Bold"`). |
-| `--size` | Integer | `50` | Font height in pixels. |
-| `--export` | Flag | `False` | If set, generates a `.h` file. |
-| `--output` | String | `"."` | The target directory for the header. |
-| `--char` | String | `"A"` | The character to visualize in the preview. |
+## Draw with PixelPlanner
 
-## Library API Usage
+Place the generated header next to your Arduino sketch. The header's base name is also the C++ namespace.
 
-Beyond the CLI, `font_gen` can be imported into your own Python automation scripts:
+```cpp
+#include <PixelPlanner.h>
+#include "font_inter_bold_24.h"
+
+Pixmap<160, 40> label;
+
+void drawLabel()
+{
+    label.clear();
+    label.print(2, 2, "Ready", font_inter_bold_24::Font, WHITE);
+}
+```
+
+Glyphs share a baseline, so descenders in letters such as `g` and `y` hang below it. Pass the pixmap's `getPixels()` and `getMask()` to TeensyTFT's `fillRegion()`, then call `swap()` to display it. Existing PixelPlanner bitmaps and generated headers use the same `BitmapFont` interface.
+
+## Preview and automate
+
+Run with `--char g` and omit `--export` to preview one glyph. Exports run without opening a window by default. Add `--preview` to export and preview in one command. Use `glyph-bridge --help` for the full Typer CLI.
 
 ```python
-from font_gen import get_glyph_data, export_header
+from glyph_bridge import export_header, get_glyph_data
 
-# 1. Generate glyph data (returns a NumPy boolean array)
-pixel_data = get_glyph_data(
-    char="A",
-    font_path="path/to/font.ttf",
-    size=48,
-    is_fake_italic=False
-)
-
-# 2. Export an entire set to a C++ header
-export_header(
-    font_path="path/to/font.ttf",
-    fam="Inter",
-    sty="Regular",
-    size=48,
-    is_fake_italic=False,
-    output_dir="./gui_assets"
-)
+pixels = get_glyph_data("A", "MyFont.ttf", 24)
+path = export_header("MyFont.ttf", "MyFont", "Regular", 24, False, "MySketch")
 ```
 
-## How It Works
-
-1. **Rasterization:** Uses the Pillow library to render text to an off-screen buffer.
-2. **Thresholding:** Converts grayscale pixel data into a `bool` array (`true` for foreground, `false` for background).
-3. **Serialization:** Writes the data as a namespaced C++ constant array, sanitizing special symbols to prevent compilation errors.
-
-## License & Requirements
-
-**Requirements:** `numpy`, `matplotlib`, `Pillow`, `requests`
+`get_glyph_data()` returns a two-dimensional NumPy Boolean array. Use `fetch_font_family()` and `find_font_path()` for individual Google Fonts families, or `setup_font_repo()` to populate the full TTF catalog for offline lookup.
